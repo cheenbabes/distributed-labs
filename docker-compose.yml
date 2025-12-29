@@ -1,4 +1,5 @@
 services:
+  # Infrastructure services
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.92.0
     container_name: otel-collector
@@ -40,7 +41,7 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--web.enable-lifecycle'
     volumes:
-      - ./infra/prometheus/prometheus.base.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -95,6 +96,76 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Application services
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: gateway
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_A_URL=http://service-a:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      otel-collector:
+        condition: service_started
+      service-a:
+        condition: service_healthy
+    networks:
+      - distributed-lab
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  service-a:
+    build:
+      context: ./services/service-a
+      dockerfile: Dockerfile
+    container_name: service-a
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SERVICE_B_URL=http://service-b:8002
+    ports:
+      - "8001:8001"
+    depends_on:
+      otel-collector:
+        condition: service_started
+      service-b:
+        condition: service_healthy
+    networks:
+      - distributed-lab
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  service-b:
+    build:
+      context: ./services/service-b
+      dockerfile: Dockerfile
+    container_name: service-b
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    ports:
+      - "8002:8002"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - distributed-lab
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 networks:
   distributed-lab:
