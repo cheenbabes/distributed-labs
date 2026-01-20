@@ -1,0 +1,213 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab47-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab47-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab47-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab47-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab47-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab47-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    container_name: lab47-api-gateway
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=api-gateway
+      - BACKEND_FAST_URL=http://backend-fast:8001
+      - BACKEND_SLOW_URL=http://backend-slow:8002
+      - BACKEND_FLAKY_URL=http://backend-flaky:8003
+      - BULKHEAD_MODE=enabled
+      - SEMAPHORE_LIMIT=10
+      - THREAD_POOL_SIZE=5
+      - REQUEST_TIMEOUT=5.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - otel-collector
+      - backend-fast
+      - backend-slow
+      - backend-flaky
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-fast:
+    build:
+      context: ./services/backend-fast
+    container_name: lab47-backend-fast
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-fast
+      - LATENCY_MIN_MS=10
+      - LATENCY_MAX_MS=30
+    ports:
+      - "8001:8001"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-slow:
+    build:
+      context: ./services/backend-slow
+    container_name: lab47-backend-slow
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-slow
+      - LATENCY_MIN_MS=500
+      - LATENCY_MAX_MS=2000
+      - SLOW_MODE_ENABLED=true
+      - SLOW_MODE_LATENCY_MS=3000
+    ports:
+      - "8002:8002"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-flaky:
+    build:
+      context: ./services/backend-flaky
+    container_name: lab47-backend-flaky
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-flaky
+      - LATENCY_MIN_MS=50
+      - LATENCY_MAX_MS=150
+      - ERROR_RATE=0.3
+      - FAILURE_MODE=random
+    ports:
+      - "8003:8003"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  client:
+    build:
+      context: ./services/client
+    container_name: lab47-client
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=client
+      - API_GATEWAY_URL=http://api-gateway:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - lab47-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab47-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab47-network
+    profiles:
+      - loadtest
+
+networks:
+  lab47-network:
+    driver: bridge

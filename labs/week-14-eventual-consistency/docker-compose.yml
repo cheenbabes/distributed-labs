@@ -1,0 +1,188 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab14-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab14-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector.yml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab14-jaeger:
+        condition: service_healthy
+    networks:
+      - lab14-network
+
+  lab14-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab14-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab14-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab14-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab14-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab14-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab14-prometheus:
+        condition: service_healthy
+      lab14-jaeger:
+        condition: service_healthy
+    networks:
+      - lab14-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab14-primary:
+    build:
+      context: ./services/primary
+    container_name: lab14-primary
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab14-otel-collector:4317
+      - OTEL_SERVICE_NAME=primary
+      - REPLICA_URLS=http://lab14-replica1:8001,http://lab14-replica2:8002
+      # Default replication delays per replica (ms)
+      - REPLICA1_DELAY_MS=500
+      - REPLICA2_DELAY_MS=1500
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab14-otel-collector
+      - lab14-replica1
+      - lab14-replica2
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab14-replica1:
+    build:
+      context: ./services/replica
+    container_name: lab14-replica1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab14-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica1
+      - REPLICA_ID=replica1
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab14-otel-collector
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab14-replica2:
+    build:
+      context: ./services/replica
+    container_name: lab14-replica2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab14-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica2
+      - REPLICA_ID=replica2
+      - PORT=8002
+    ports:
+      - "8002:8002"
+    depends_on:
+      - lab14-otel-collector
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab14-client:
+    build:
+      context: ./services/client
+    container_name: lab14-client
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab14-otel-collector:4317
+      - OTEL_SERVICE_NAME=client
+      - PRIMARY_URL=http://lab14-primary:8000
+      - REPLICA_URLS=http://lab14-replica1:8001,http://lab14-replica2:8002
+      - POLL_INTERVAL_MS=500
+    ports:
+      - "8003:8003"
+    depends_on:
+      - lab14-otel-collector
+      - lab14-primary
+      - lab14-replica1
+      - lab14-replica2
+    networks:
+      - lab14-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab14-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab14-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab14-network
+    profiles:
+      - loadtest
+
+networks:
+  lab14-network:
+    driver: bridge

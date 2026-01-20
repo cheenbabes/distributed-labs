@@ -1,0 +1,194 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab33-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab33-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab33-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab33-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab33-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab33-network
+
+  # ===========================================
+  # Webhook Sender Service
+  # ===========================================
+
+  webhook-sender:
+    build:
+      context: ./services/webhook-sender
+    container_name: lab33-webhook-sender
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab33-otel-collector:4317
+      - OTEL_SERVICE_NAME=webhook-sender
+      - WEBHOOK_SECRET=super-secret-key-for-hmac
+      - MAX_RETRIES=5
+      - BASE_RETRY_DELAY_SEC=1.0
+      - MAX_RETRY_DELAY_SEC=16.0
+      - CIRCUIT_FAILURE_THRESHOLD=5
+      - CIRCUIT_RESET_TIMEOUT_SEC=30.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - otel-collector
+      - receiver-healthy
+      - receiver-flaky
+      - receiver-dead
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Webhook Receiver Services
+  # ===========================================
+
+  receiver-healthy:
+    build:
+      context: ./services/receiver-healthy
+    container_name: lab33-receiver-healthy
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab33-otel-collector:4317
+      - OTEL_SERVICE_NAME=receiver-healthy
+      - WEBHOOK_SECRET=super-secret-key-for-hmac
+      - PROCESS_DELAY_MS=50
+    ports:
+      - "8001:8001"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  receiver-flaky:
+    build:
+      context: ./services/receiver-flaky
+    container_name: lab33-receiver-flaky
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab33-otel-collector:4317
+      - OTEL_SERVICE_NAME=receiver-flaky
+      - WEBHOOK_SECRET=super-secret-key-for-hmac
+      - FAILURE_RATE=0.3
+      - TIMEOUT_RATE=0.1
+      - PROCESS_DELAY_MS=100
+    ports:
+      - "8002:8002"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  receiver-dead:
+    build:
+      context: ./services/receiver-dead
+    container_name: lab33-receiver-dead
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab33-otel-collector:4317
+      - OTEL_SERVICE_NAME=receiver-dead
+      - IS_DEAD=true
+      - ERROR_CODE=503
+      - ERROR_MESSAGE=Service Unavailable - Endpoint is down
+    ports:
+      - "8003:8003"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab33-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab33-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab33-network
+    profiles:
+      - loadtest
+
+networks:
+  lab33-network:
+    driver: bridge

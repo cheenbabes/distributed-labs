@@ -1,0 +1,202 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab29-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab29-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab29-jaeger:
+        condition: service_healthy
+    networks:
+      - lab29-network
+
+  lab29-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab29-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab29-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab29-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab29-prometheus:
+        condition: service_healthy
+      lab29-jaeger:
+        condition: service_healthy
+    networks:
+      - lab29-network
+
+  # ===========================================
+  # Saga Pattern Services
+  # ===========================================
+
+  lab29-order-service:
+    build:
+      context: ./services/order-service
+    container_name: lab29-order-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab29-otel-collector:4317
+      - OTEL_SERVICE_NAME=order-service
+      - ORCHESTRATOR_URL=http://lab29-orchestrator:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab29-otel-collector
+      - lab29-orchestrator
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-orchestrator:
+    build:
+      context: ./services/orchestrator
+    container_name: lab29-orchestrator
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab29-otel-collector:4317
+      - OTEL_SERVICE_NAME=saga-orchestrator
+      - INVENTORY_URL=http://lab29-inventory-service:8002
+      - PAYMENT_URL=http://lab29-payment-service:8003
+      - SHIPPING_URL=http://lab29-shipping-service:8004
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab29-otel-collector
+      - lab29-inventory-service
+      - lab29-payment-service
+      - lab29-shipping-service
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-inventory-service:
+    build:
+      context: ./services/inventory-service
+    container_name: lab29-inventory-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab29-otel-collector:4317
+      - OTEL_SERVICE_NAME=inventory-service
+      - FAIL_RATE=0.0
+    ports:
+      - "8002:8002"
+    depends_on:
+      - lab29-otel-collector
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-payment-service:
+    build:
+      context: ./services/payment-service
+    container_name: lab29-payment-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab29-otel-collector:4317
+      - OTEL_SERVICE_NAME=payment-service
+      - FAIL_RATE=0.0
+    ports:
+      - "8003:8003"
+    depends_on:
+      - lab29-otel-collector
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab29-shipping-service:
+    build:
+      context: ./services/shipping-service
+    container_name: lab29-shipping-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab29-otel-collector:4317
+      - OTEL_SERVICE_NAME=shipping-service
+      - FAIL_RATE=0.0
+    ports:
+      - "8004:8004"
+    depends_on:
+      - lab29-otel-collector
+    networks:
+      - lab29-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab29-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab29-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab29-network
+    profiles:
+      - loadtest
+
+networks:
+  lab29-network:
+    driver: bridge

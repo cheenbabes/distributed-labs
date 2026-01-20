@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['lab33-otel-collector:8889']
+
+  - job_name: 'lab33-webhook-sender'
+    static_configs:
+      - targets: ['lab33-webhook-sender:8000']
+    metrics_path: /metrics
+
+  - job_name: 'lab33-receiver-healthy'
+    static_configs:
+      - targets: ['lab33-receiver-healthy:8001']
+    metrics_path: /metrics
+
+  - job_name: 'lab33-receiver-flaky'
+    static_configs:
+      - targets: ['lab33-receiver-flaky:8002']
+    metrics_path: /metrics
+
+  - job_name: 'lab33-receiver-dead'
+    static_configs:
+      - targets: ['lab33-receiver-dead:8003']
+    metrics_path: /metrics

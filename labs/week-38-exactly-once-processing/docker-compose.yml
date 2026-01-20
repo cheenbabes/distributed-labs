@@ -1,0 +1,303 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: lab38-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: lab38-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Enable exactly-once semantics
+      KAFKA_ENABLE_IDEMPOTENCE: "true"
+      KAFKA_TRANSACTIONAL_ID_EXPIRATION_MS: 604800000
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: lab38-kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - lab38-network
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic orders --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic order-results --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic dlq --partitions 1 --replication-factor 1
+      echo 'Topics created successfully'
+      kafka-topics --bootstrap-server kafka:9092 --list
+      "
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: lab38-postgres
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab123
+      POSTGRES_DB: exactly_once
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d exactly_once"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Observability
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab38-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab38-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab38-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab38-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab38-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab38-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  producer:
+    build:
+      context: ./services/producer
+    container_name: lab38-producer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=producer
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=orders
+      # Delivery semantics mode: at-most-once, at-least-once, exactly-once
+      - DELIVERY_MODE=exactly-once
+      - ENABLE_TRANSACTIONS=true
+      - TRANSACTIONAL_ID=producer-1
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  consumer:
+    build:
+      context: ./services/consumer
+    container_name: lab38-consumer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=consumer
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=orders
+      - KAFKA_GROUP_ID=order-processors
+      - DATABASE_URL=postgresql://lab:lab123@postgres:5432/exactly_once
+      # Consumer mode: at-most-once, at-least-once, exactly-once
+      - PROCESSING_MODE=exactly-once
+      - ENABLE_IDEMPOTENCY=true
+      # Failure injection for testing
+      - FAILURE_RATE=0.0
+      - CRASH_AFTER_MESSAGES=0
+    ports:
+      - "8001:8001"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Additional consumer for scaling tests
+  consumer-2:
+    build:
+      context: ./services/consumer
+    container_name: lab38-consumer-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=consumer-2
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=orders
+      - KAFKA_GROUP_ID=order-processors
+      - DATABASE_URL=postgresql://lab:lab123@postgres:5432/exactly_once
+      - PROCESSING_MODE=exactly-once
+      - ENABLE_IDEMPOTENCY=true
+      - FAILURE_RATE=0.0
+      - CRASH_AFTER_MESSAGES=0
+    ports:
+      - "8002:8001"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+    networks:
+      - lab38-network
+    profiles:
+      - scaled
+
+  api:
+    build:
+      context: ./services/api
+    container_name: lab38-api
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=api
+      - DATABASE_URL=postgresql://lab:lab123@postgres:5432/exactly_once
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - lab38-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab38-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab38-network
+    profiles:
+      - loadtest
+
+networks:
+  lab38-network:
+    driver: bridge

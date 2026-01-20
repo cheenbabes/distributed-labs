@@ -1,0 +1,146 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab25-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab25-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab25-jaeger:
+        condition: service_healthy
+    networks:
+      - lab25-network
+
+  lab25-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab25-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab25-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab25-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab25-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab25-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab25-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab25-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab25-prometheus:
+        condition: service_healthy
+      lab25-jaeger:
+        condition: service_healthy
+    networks:
+      - lab25-network
+
+  # ===========================================
+  # KV Store with WAL (Durable Mode)
+  # ===========================================
+
+  lab25-kv-store-wal:
+    build:
+      context: ./services/kv-store
+    container_name: lab25-kv-store-wal
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab25-otel-collector:4317
+      - OTEL_SERVICE_NAME=kv-store-wal
+      - WAL_ENABLED=true
+      - WAL_PATH=/data/wal.log
+      - CHECKPOINT_PATH=/data/checkpoint.json
+      - FSYNC_ENABLED=true
+      - CHECKPOINT_THRESHOLD=100
+    ports:
+      - "8001:8000"
+    volumes:
+      - lab25-wal-data:/data
+    depends_on:
+      - lab25-otel-collector
+    networks:
+      - lab25-network
+    restart: always
+
+  # ===========================================
+  # KV Store without WAL (Volatile Mode)
+  # ===========================================
+
+  lab25-kv-store-nowal:
+    build:
+      context: ./services/kv-store
+    container_name: lab25-kv-store-nowal
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab25-otel-collector:4317
+      - OTEL_SERVICE_NAME=kv-store-nowal
+      - WAL_ENABLED=false
+      - WAL_PATH=/data/wal.log
+      - CHECKPOINT_PATH=/data/checkpoint.json
+    ports:
+      - "8002:8000"
+    volumes:
+      - lab25-nowal-data:/data
+    depends_on:
+      - lab25-otel-collector
+    networks:
+      - lab25-network
+    restart: always
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab25-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab25-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab25-network
+    profiles:
+      - loadtest
+
+networks:
+  lab25-network:
+    driver: bridge
+
+volumes:
+  lab25-wal-data:
+  lab25-nowal-data:

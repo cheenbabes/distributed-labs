@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['lab23-otel-collector:8889']
+
+  - job_name: 'lab23-product-catalog'
+    static_configs:
+      - targets: ['lab23-product-catalog:8000']
+    metrics_path: /metrics
+
+  - job_name: 'lab23-recommendation'
+    static_configs:
+      - targets: ['lab23-recommendation:8001']
+    metrics_path: /metrics
+
+  - job_name: 'lab23-pricing'
+    static_configs:
+      - targets: ['lab23-pricing:8002']
+    metrics_path: /metrics
+
+  - job_name: 'lab23-inventory'
+    static_configs:
+      - targets: ['lab23-inventory:8003']
+    metrics_path: /metrics

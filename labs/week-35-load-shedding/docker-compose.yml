@@ -1,0 +1,148 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab35-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab35-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab35-jaeger:
+        condition: service_healthy
+    networks:
+      - lab35-network
+
+  lab35-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab35-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab35-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab35-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab35-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab35-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab35-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab35-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab35-prometheus:
+        condition: service_healthy
+      lab35-jaeger:
+        condition: service_healthy
+    networks:
+      - lab35-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab35-api-service:
+    build:
+      context: ./services/api-service
+    container_name: lab35-api-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab35-otel-collector:4317
+      - OTEL_SERVICE_NAME=api-service
+      - WORKER_URL=http://lab35-worker-service:8001
+      # Load shedding configuration
+      - SHEDDING_ENABLED=false
+      - SHEDDING_STRATEGY=random
+      - MAX_QUEUE_DEPTH=100
+      - MAX_CONCURRENT_REQUESTS=50
+      - SHED_THRESHOLD_PERCENT=80
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab35-otel-collector
+      - lab35-worker-service
+    networks:
+      - lab35-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab35-worker-service:
+    build:
+      context: ./services/worker-service
+    container_name: lab35-worker-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab35-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker-service
+      # Simulated processing time
+      - PROCESSING_TIME_MIN_MS=50
+      - PROCESSING_TIME_MAX_MS=200
+      # Capacity simulation
+      - MAX_CONCURRENT=20
+      - SIMULATE_OVERLOAD=false
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab35-otel-collector
+    networks:
+      - lab35-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab35-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab35-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab35-network
+    profiles:
+      - loadtest
+
+networks:
+  lab35-network:
+    driver: bridge

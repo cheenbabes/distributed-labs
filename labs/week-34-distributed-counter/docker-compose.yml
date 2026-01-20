@@ -1,0 +1,250 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab34-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab34-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab34-jaeger:
+        condition: service_healthy
+    networks:
+      - lab34-network
+
+  lab34-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab34-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab34-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab34-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab34-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab34-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab34-prometheus:
+        condition: service_healthy
+      lab34-jaeger:
+        condition: service_healthy
+    networks:
+      - lab34-network
+
+  # ===========================================
+  # Coordinator Service (Manages sync and global state)
+  # ===========================================
+
+  lab34-coordinator:
+    build:
+      context: ./services/coordinator
+    container_name: lab34-coordinator
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=coordinator
+      - REGION_ENDPOINTS=lab34-counter-us-east:8001,lab34-counter-us-west:8002,lab34-counter-eu-west:8003
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab34-otel-collector
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Gateway - Load balancer / API entry point
+  # ===========================================
+
+  lab34-gateway:
+    build:
+      context: ./services/gateway
+    container_name: lab34-gateway
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=gateway
+      - COUNTER_ENDPOINTS=lab34-counter-us-east:8001,lab34-counter-us-west:8002,lab34-counter-eu-west:8003
+      - COORDINATOR_URL=http://lab34-coordinator:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - lab34-otel-collector
+      - lab34-coordinator
+      - lab34-counter-us-east
+      - lab34-counter-us-west
+      - lab34-counter-eu-west
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Regional Counter Services (CRDT-based)
+  # ===========================================
+
+  lab34-counter-us-east:
+    build:
+      context: ./services/counter
+    container_name: lab34-counter-us-east
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=counter-us-east
+      - REGION=us-east
+      - NODE_ID=us-east-1
+      - SERVICE_PORT=8001
+      - PEER_ENDPOINTS=lab34-counter-us-west:8002,lab34-counter-eu-west:8003
+      - SYNC_INTERVAL_MS=5000
+      - NETWORK_PARTITION=false
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab34-otel-collector
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab34-counter-us-west:
+    build:
+      context: ./services/counter
+    container_name: lab34-counter-us-west
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=counter-us-west
+      - REGION=us-west
+      - NODE_ID=us-west-1
+      - SERVICE_PORT=8002
+      - PEER_ENDPOINTS=lab34-counter-us-east:8001,lab34-counter-eu-west:8003
+      - SYNC_INTERVAL_MS=5000
+      - NETWORK_PARTITION=false
+    ports:
+      - "8002:8002"
+    depends_on:
+      - lab34-otel-collector
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab34-counter-eu-west:
+    build:
+      context: ./services/counter
+    container_name: lab34-counter-eu-west
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=counter-eu-west
+      - REGION=eu-west
+      - NODE_ID=eu-west-1
+      - SERVICE_PORT=8003
+      - PEER_ENDPOINTS=lab34-counter-us-east:8001,lab34-counter-us-west:8002
+      - SYNC_INTERVAL_MS=5000
+      - NETWORK_PARTITION=false
+    ports:
+      - "8003:8003"
+    depends_on:
+      - lab34-otel-collector
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Strong Consistency Counter (for comparison)
+  # ===========================================
+
+  lab34-counter-consistent:
+    build:
+      context: ./services/counter-consistent
+    container_name: lab34-counter-consistent
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab34-otel-collector:4317
+      - OTEL_SERVICE_NAME=counter-consistent
+      - SERVICE_PORT=8004
+      - COORDINATOR_URL=http://lab34-coordinator:8000
+    ports:
+      - "8004:8004"
+    depends_on:
+      - lab34-otel-collector
+      - lab34-coordinator
+    networks:
+      - lab34-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab34-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab34-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab34-network
+    profiles:
+      - loadtest
+
+networks:
+  lab34-network:
+    driver: bridge

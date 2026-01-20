@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # Scrape all shortener instances individually
+  - job_name: 'url-shortener-1'
+    static_configs:
+      - targets: ['shortener-1:8000']
+        labels:
+          instance: '1'
+    metrics_path: /metrics
+
+  - job_name: 'url-shortener-2'
+    static_configs:
+      - targets: ['shortener-2:8000']
+        labels:
+          instance: '2'
+    metrics_path: /metrics
+
+  - job_name: 'url-shortener-3'
+    static_configs:
+      - targets: ['shortener-3:8000']
+        labels:
+          instance: '3'
+    metrics_path: /metrics
+
+  # Nginx status (if enabled)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: /nginx_status

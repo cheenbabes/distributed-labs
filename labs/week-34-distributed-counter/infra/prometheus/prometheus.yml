@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['lab34-otel-collector:8889']
+
+  - job_name: 'lab34-gateway'
+    static_configs:
+      - targets: ['lab34-gateway:8080']
+    metrics_path: /metrics
+
+  - job_name: 'lab34-coordinator'
+    static_configs:
+      - targets: ['lab34-coordinator:8000']
+    metrics_path: /metrics
+
+  - job_name: 'lab34-counter-us-east'
+    static_configs:
+      - targets: ['lab34-counter-us-east:8001']
+    metrics_path: /metrics
+
+  - job_name: 'lab34-counter-us-west'
+    static_configs:
+      - targets: ['lab34-counter-us-west:8002']
+    metrics_path: /metrics
+
+  - job_name: 'lab34-counter-eu-west'
+    static_configs:
+      - targets: ['lab34-counter-eu-west:8003']
+    metrics_path: /metrics
+
+  - job_name: 'lab34-counter-consistent'
+    static_configs:
+      - targets: ['lab34-counter-consistent:8004']
+    metrics_path: /metrics

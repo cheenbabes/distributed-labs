@@ -1,0 +1,174 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab12-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab12-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector.yml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab12-jaeger:
+        condition: service_healthy
+    networks:
+      - lab12-network
+
+  lab12-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab12-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab12-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab12-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab12-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab12-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab12-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab12-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab12-prometheus:
+        condition: service_healthy
+      lab12-jaeger:
+        condition: service_healthy
+    networks:
+      - lab12-network
+
+  # ===========================================
+  # Database (simulating slow queries)
+  # ===========================================
+
+  lab12-postgres:
+    image: postgres:16-alpine
+    container_name: lab12-postgres
+    environment:
+      - POSTGRES_USER=lab
+      - POSTGRES_PASSWORD=lab
+      - POSTGRES_DB=lab
+    ports:
+      - "5432:5432"
+    networks:
+      - lab12-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d lab"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - lab12-postgres-data:/var/lib/postgresql/data
+
+  # ===========================================
+  # Cache (Redis with short TTL for demo)
+  # ===========================================
+
+  lab12-redis:
+    image: redis:7-alpine
+    container_name: lab12-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - lab12-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Service
+  # ===========================================
+
+  lab12-api:
+    build:
+      context: ./services/api
+    container_name: lab12-api
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab12-otel-collector:4317
+      - OTEL_SERVICE_NAME=lab12-api
+      - REDIS_URL=redis://lab12-redis:6379
+      - DATABASE_URL=postgresql://lab:lab@lab12-postgres:5432/lab
+      # Cache configuration
+      - CACHE_TTL_SECONDS=5
+      # Simulated database query time (ms)
+      - DB_QUERY_MIN_MS=500
+      - DB_QUERY_MAX_MS=1000
+      # Protection mechanisms (disabled by default for demo)
+      - ENABLE_LOCK_PROTECTION=false
+      - ENABLE_PROBABILISTIC_REFRESH=false
+      - PROBABILISTIC_REFRESH_FACTOR=0.1
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab12-otel-collector:
+        condition: service_started
+      lab12-redis:
+        condition: service_healthy
+      lab12-postgres:
+        condition: service_healthy
+    networks:
+      - lab12-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab12-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab12-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab12-network
+    profiles:
+      - loadtest
+
+networks:
+  lab12-network:
+    driver: bridge
+
+volumes:
+  lab12-postgres-data:

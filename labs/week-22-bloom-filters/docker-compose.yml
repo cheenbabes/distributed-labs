@@ -1,0 +1,149 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab22-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab22-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab22-jaeger:
+        condition: service_healthy
+    networks:
+      - lab22-network
+
+  lab22-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab22-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab22-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab22-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab22-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab22-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab22-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab22-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab22-prometheus:
+        condition: service_healthy
+      lab22-jaeger:
+        condition: service_healthy
+    networks:
+      - lab22-network
+
+  # ===========================================
+  # Database
+  # ===========================================
+
+  lab22-postgres:
+    image: postgres:15-alpine
+    container_name: lab22-postgres
+    environment:
+      - POSTGRES_USER=lab22
+      - POSTGRES_PASSWORD=lab22pass
+      - POSTGRES_DB=usernames
+    ports:
+      - "5432:5432"
+    networks:
+      - lab22-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab22 -d usernames"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - lab22-postgres-data:/var/lib/postgresql/data
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab22-username-service:
+    build:
+      context: ./services/username-service
+    container_name: lab22-username-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab22-otel-collector:4317
+      - OTEL_SERVICE_NAME=username-service
+      - DATABASE_URL=postgresql://lab22:lab22pass@lab22-postgres:5432/usernames
+      # Bloom filter configuration
+      - BLOOM_FILTER_ENABLED=false
+      - BLOOM_FILTER_SIZE=10000
+      - BLOOM_FILTER_HASH_COUNT=7
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab22-otel-collector:
+        condition: service_started
+      lab22-postgres:
+        condition: service_healthy
+    networks:
+      - lab22-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab22-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab22-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab22-network
+    profiles:
+      - loadtest
+
+networks:
+  lab22-network:
+    driver: bridge
+
+volumes:
+  lab22-postgres-data:

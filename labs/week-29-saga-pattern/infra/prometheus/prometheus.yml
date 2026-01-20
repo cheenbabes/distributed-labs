@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['lab29-otel-collector:8889']
+
+  - job_name: 'lab29-order-service'
+    static_configs:
+      - targets: ['lab29-order-service:8000']
+    metrics_path: /metrics
+
+  - job_name: 'lab29-orchestrator'
+    static_configs:
+      - targets: ['lab29-orchestrator:8001']
+    metrics_path: /metrics
+
+  - job_name: 'lab29-inventory-service'
+    static_configs:
+      - targets: ['lab29-inventory-service:8002']
+    metrics_path: /metrics
+
+  - job_name: 'lab29-payment-service'
+    static_configs:
+      - targets: ['lab29-payment-service:8003']
+    metrics_path: /metrics
+
+  - job_name: 'lab29-shipping-service'
+    static_configs:
+      - targets: ['lab29-shipping-service:8004']
+    metrics_path: /metrics

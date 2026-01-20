@@ -1,0 +1,289 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab40-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab40-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab40-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab40-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab40-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab40-network
+
+  # ===========================================
+  # Data Stores
+  # ===========================================
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: lab40-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: lab40-postgres
+    environment:
+      - POSTGRES_USER=labuser
+      - POSTGRES_PASSWORD=labpass
+      - POSTGRES_DB=labdb
+    ports:
+      - "5432:5432"
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labuser -d labdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Balancer
+  # ===========================================
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: lab40-nginx
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - api-warm
+      - api-cold
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  # API service - WARM instance (pre-warmed caches and connections)
+  api-warm:
+    build:
+      context: ./services/api
+    container_name: lab40-api-warm
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=api-warm
+      - INSTANCE_ID=warm-1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=labuser
+      - POSTGRES_PASSWORD=labpass
+      - POSTGRES_DB=labdb
+      - BACKEND_URL=http://backend:8001
+      - PREWARM_CACHE=true
+      - PREWARM_CONNECTIONS=true
+      - CONNECTION_POOL_SIZE=10
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # API service - COLD instance (no pre-warming, simulates fresh deploy)
+  api-cold:
+    build:
+      context: ./services/api
+    container_name: lab40-api-cold
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=api-cold
+      - INSTANCE_ID=cold-1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=labuser
+      - POSTGRES_PASSWORD=labpass
+      - POSTGRES_DB=labdb
+      - BACKEND_URL=http://backend:8001
+      - PREWARM_CACHE=false
+      - PREWARM_CONNECTIONS=false
+      - CONNECTION_POOL_SIZE=10
+    ports:
+      - "8002:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Backend service (simulates database-heavy operations)
+  backend:
+    build:
+      context: ./services/backend
+    container_name: lab40-backend
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=backend
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=labuser
+      - POSTGRES_PASSWORD=labpass
+      - POSTGRES_DB=labdb
+      - CONNECTION_POOL_SIZE=5
+      - PREWARM_CONNECTIONS=true
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Cache warmer service (demonstrates cache warming strategies)
+  warmup-service:
+    build:
+      context: ./services/warmup-service
+    container_name: lab40-warmup-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=warmup-service
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_WARM_URL=http://api-warm:8000
+      - API_COLD_URL=http://api-cold:8000
+    ports:
+      - "8003:8003"
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-warm:
+        condition: service_healthy
+      api-cold:
+        condition: service_healthy
+    networks:
+      - lab40-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab40-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab40-network
+    profiles:
+      - loadtest
+
+networks:
+  lab40-network:
+    driver: bridge

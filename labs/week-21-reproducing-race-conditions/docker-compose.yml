@@ -1,0 +1,123 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab21-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab21-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab21-jaeger:
+        condition: service_healthy
+    networks:
+      - lab21-network
+
+  lab21-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab21-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab21-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab21-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab21-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab21-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab21-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab21-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab21-prometheus:
+        condition: service_healthy
+      lab21-jaeger:
+        condition: service_healthy
+    networks:
+      - lab21-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab21-bank-api:
+    build:
+      context: ./services/bank-api
+    container_name: lab21-bank-api
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab21-otel-collector:4317
+      - OTEL_SERVICE_NAME=bank-api
+      # Debug mode settings
+      - DEBUG_DELAY_ENABLED=false
+      - DEBUG_DELAY_MS=100
+      # Barrier synchronization settings
+      - BARRIER_ENABLED=false
+      - BARRIER_COUNT=2
+      # Fix mode (use database transactions)
+      - USE_TRANSACTIONS=false
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab21-otel-collector
+    networks:
+      - lab21-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab21-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab21-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab21-network
+    profiles:
+      - loadtest
+
+networks:
+  lab21-network:
+    driver: bridge

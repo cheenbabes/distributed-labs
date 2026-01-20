@@ -1,0 +1,194 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab17-rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: lab17-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  lab17-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab17-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab17-jaeger:
+        condition: service_healthy
+    networks:
+      - lab17-network
+
+  lab17-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab17-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab17-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab17-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab17-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab17-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab17-prometheus:
+        condition: service_healthy
+      lab17-jaeger:
+        condition: service_healthy
+    networks:
+      - lab17-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab17-producer:
+    build:
+      context: ./services/producer
+    container_name: lab17-producer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab17-otel-collector:4317
+      - OTEL_SERVICE_NAME=producer
+      - RABBITMQ_HOST=lab17-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASS=guest
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab17-otel-collector:
+        condition: service_started
+      lab17-rabbitmq:
+        condition: service_healthy
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab17-worker:
+    build:
+      context: ./services/worker
+    container_name: lab17-worker
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab17-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker
+      - RABBITMQ_HOST=lab17-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASS=guest
+      - FAILURE_RATE=0.0
+      - MAX_RETRIES=3
+      - RETRY_DELAY_MS=1000
+    ports:
+      - "8001:8001"
+    depends_on:
+      lab17-otel-collector:
+        condition: service_started
+      lab17-rabbitmq:
+        condition: service_healthy
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab17-dlq-consumer:
+    build:
+      context: ./services/dlq-consumer
+    container_name: lab17-dlq-consumer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab17-otel-collector:4317
+      - OTEL_SERVICE_NAME=dlq-consumer
+      - RABBITMQ_HOST=lab17-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASS=guest
+    ports:
+      - "8002:8002"
+    depends_on:
+      lab17-otel-collector:
+        condition: service_started
+      lab17-rabbitmq:
+        condition: service_healthy
+    networks:
+      - lab17-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab17-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab17-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab17-network
+    profiles:
+      - loadtest
+
+networks:
+  lab17-network:
+    driver: bridge

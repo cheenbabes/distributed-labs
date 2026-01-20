@@ -1,0 +1,219 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab52-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab52-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab52-jaeger:
+        condition: service_healthy
+    networks:
+      - lab52-network
+
+  lab52-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab52-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab52-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab52-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab52-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab52-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab52-prometheus:
+        condition: service_healthy
+      lab52-jaeger:
+        condition: service_healthy
+    networks:
+      - lab52-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  # Frontend - Entry point that uses the hedger
+  lab52-frontend:
+    build:
+      context: ./services/frontend
+    container_name: lab52-frontend
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab52-otel-collector:4317
+      - OTEL_SERVICE_NAME=frontend
+      - HEDGER_URL=http://lab52-hedger:8080
+      - DIRECT_BACKEND_URL=http://lab52-backend-1:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab52-otel-collector
+      - lab52-hedger
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Hedger - Proxy that implements hedge request logic
+  lab52-hedger:
+    build:
+      context: ./services/hedger
+    container_name: lab52-hedger
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab52-otel-collector:4317
+      - OTEL_SERVICE_NAME=hedger
+      - BACKEND_URLS=http://lab52-backend-1:8001,http://lab52-backend-2:8002,http://lab52-backend-3:8003
+      - HEDGE_DELAY_MS=50
+      - HEDGE_ENABLED=true
+    ports:
+      - "8080:8080"
+    depends_on:
+      - lab52-otel-collector
+      - lab52-backend-1
+      - lab52-backend-2
+      - lab52-backend-3
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Backend replicas with variable latency
+  lab52-backend-1:
+    build:
+      context: ./services/backend
+    container_name: lab52-backend-1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab52-otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-1
+      - INSTANCE_ID=backend-1
+      - PORT=8001
+      # Latency distribution: p50=30ms, p95=100ms, p99=300ms
+      - LATENCY_P50_MS=30
+      - LATENCY_P95_MS=100
+      - LATENCY_P99_MS=300
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab52-otel-collector
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab52-backend-2:
+    build:
+      context: ./services/backend
+    container_name: lab52-backend-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab52-otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-2
+      - INSTANCE_ID=backend-2
+      - PORT=8002
+      - LATENCY_P50_MS=30
+      - LATENCY_P95_MS=100
+      - LATENCY_P99_MS=300
+    ports:
+      - "8002:8002"
+    depends_on:
+      - lab52-otel-collector
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab52-backend-3:
+    build:
+      context: ./services/backend
+    container_name: lab52-backend-3
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab52-otel-collector:4317
+      - OTEL_SERVICE_NAME=backend-3
+      - INSTANCE_ID=backend-3
+      - PORT=8003
+      - LATENCY_P50_MS=30
+      - LATENCY_P95_MS=100
+      - LATENCY_P99_MS=300
+    ports:
+      - "8003:8003"
+    depends_on:
+      - lab52-otel-collector
+    networks:
+      - lab52-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab52-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab52-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab52-network
+    profiles:
+      - loadtest
+
+networks:
+  lab52-network:
+    driver: bridge

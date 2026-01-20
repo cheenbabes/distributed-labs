@@ -1,0 +1,251 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab44-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab44-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab44-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab44-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab44-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab44-network
+
+  # ===========================================
+  # Data Stores
+  # ===========================================
+
+  users-db:
+    image: redis:7.2-alpine
+    container_name: lab44-users-db
+    ports:
+      - "6379:6379"
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  products-db:
+    image: redis:7.2-alpine
+    container_name: lab44-products-db
+    ports:
+      - "6380:6379"
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  reviews-db:
+    image: redis:7.2-alpine
+    container_name: lab44-reviews-db
+    ports:
+      - "6381:6379"
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # GraphQL Subgraph Services
+  # ===========================================
+
+  users-subgraph:
+    build:
+      context: ./services/users
+    container_name: lab44-users-subgraph
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=users-subgraph
+      - REDIS_URL=redis://users-db:6379
+      - PORT=4001
+      # N+1 simulation: when true, doesn't use DataLoader batching
+      - DISABLE_DATALOADER=false
+      # Artificial latency per DB call
+      - DB_LATENCY_MS=10
+    ports:
+      - "4001:4001"
+    depends_on:
+      otel-collector:
+        condition: service_started
+      users-db:
+        condition: service_healthy
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4001/health').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  products-subgraph:
+    build:
+      context: ./services/products
+    container_name: lab44-products-subgraph
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=products-subgraph
+      - REDIS_URL=redis://products-db:6379
+      - PORT=4002
+      - DISABLE_DATALOADER=false
+      - DB_LATENCY_MS=10
+    ports:
+      - "4002:4002"
+    depends_on:
+      otel-collector:
+        condition: service_started
+      products-db:
+        condition: service_healthy
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4002/health').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  reviews-subgraph:
+    build:
+      context: ./services/reviews
+    container_name: lab44-reviews-subgraph
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=reviews-subgraph
+      - REDIS_URL=redis://reviews-db:6379
+      - PORT=4003
+      - DISABLE_DATALOADER=false
+      - DB_LATENCY_MS=10
+      # Failure simulation
+      - FAILURE_RATE=0.0
+    ports:
+      - "4003:4003"
+    depends_on:
+      otel-collector:
+        condition: service_started
+      reviews-db:
+        condition: service_healthy
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4003/health').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Apollo Federation Gateway
+  # ===========================================
+
+  gateway:
+    build:
+      context: ./services/gateway
+    container_name: lab44-gateway
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=federation-gateway
+      - PORT=4000
+      - USERS_SUBGRAPH_URL=http://users-subgraph:4001/graphql
+      - PRODUCTS_SUBGRAPH_URL=http://products-subgraph:4002/graphql
+      - REVIEWS_SUBGRAPH_URL=http://reviews-subgraph:4003/graphql
+    ports:
+      - "4000:4000"
+    depends_on:
+      - otel-collector
+      - users-subgraph
+      - products-subgraph
+      - reviews-subgraph
+    networks:
+      - lab44-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab44-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab44-network
+    profiles:
+      - loadtest
+
+networks:
+  lab44-network:
+    driver: bridge

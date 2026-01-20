@@ -1,0 +1,158 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab18-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab18-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab18-jaeger:
+        condition: service_healthy
+    networks:
+      - lab18-network
+
+  lab18-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab18-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab18-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab18-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab18-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab18-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab18-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab18-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab18-prometheus:
+        condition: service_healthy
+      lab18-jaeger:
+        condition: service_healthy
+    networks:
+      - lab18-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab18-producer:
+    build:
+      context: ./services/producer
+    container_name: lab18-producer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab18-otel-collector:4317
+      - OTEL_SERVICE_NAME=producer
+      - CONSUMER_URL=http://lab18-consumer:8001
+      # Production rate: items per second
+      - PRODUCTION_RATE=10
+      # Queue mode: unbounded, bounded, rate_limited
+      - QUEUE_MODE=unbounded
+      # Max queue size (only used in bounded mode)
+      - MAX_QUEUE_SIZE=100
+      # Rate limit: max items sent to consumer per second (only used in rate_limited mode)
+      - RATE_LIMIT=5
+      # Memory limit for demonstration (in MB)
+      - MEMORY_LIMIT_MB=256
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab18-otel-collector
+      - lab18-consumer
+    networks:
+      - lab18-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Memory limit to demonstrate OOM scenarios
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  lab18-consumer:
+    build:
+      context: ./services/consumer
+    container_name: lab18-consumer
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab18-otel-collector:4317
+      - OTEL_SERVICE_NAME=consumer
+      # Processing time per item (milliseconds)
+      - PROCESSING_TIME_MS=100
+      # Enable variable processing time (adds randomness)
+      - VARIABLE_PROCESSING=false
+      # Min/max for variable processing
+      - PROCESSING_MIN_MS=50
+      - PROCESSING_MAX_MS=200
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab18-otel-collector
+    networks:
+      - lab18-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab18-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab18-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab18-network
+    profiles:
+      - loadtest
+
+networks:
+  lab18-network:
+    driver: bridge

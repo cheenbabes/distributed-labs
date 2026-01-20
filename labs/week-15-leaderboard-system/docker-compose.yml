@@ -1,0 +1,166 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab15-redis:
+    image: redis:7.2-alpine
+    container_name: lab15-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - lab15-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab15-postgres:
+    image: postgres:16-alpine
+    container_name: lab15-postgres
+    environment:
+      - POSTGRES_USER=leaderboard
+      - POSTGRES_PASSWORD=leaderboard
+      - POSTGRES_DB=leaderboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - lab15-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leaderboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab15-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab15-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector.yml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab15-jaeger:
+        condition: service_healthy
+    networks:
+      - lab15-network
+
+  lab15-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab15-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab15-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab15-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab15-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab15-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab15-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab15-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab15-prometheus:
+        condition: service_healthy
+      lab15-jaeger:
+        condition: service_healthy
+    networks:
+      - lab15-network
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab15-leaderboard-api:
+    build:
+      context: ./services/leaderboard-api
+    container_name: lab15-leaderboard-api
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab15-otel-collector:4317
+      - OTEL_SERVICE_NAME=leaderboard-api
+      - REDIS_HOST=lab15-redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=lab15-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=leaderboard
+      - POSTGRES_PASSWORD=leaderboard
+      - POSTGRES_DB=leaderboard
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab15-redis:
+        condition: service_healthy
+      lab15-postgres:
+        condition: service_healthy
+      lab15-otel-collector:
+        condition: service_started
+    networks:
+      - lab15-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab15-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab15-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab15-network
+    profiles:
+      - loadtest
+
+networks:
+  lab15-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:

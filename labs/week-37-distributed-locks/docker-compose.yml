@@ -1,0 +1,230 @@
+services:
+  # ===========================================
+  # Infrastructure - Redis Instances for Redlock
+  # ===========================================
+
+  lab37-redis-1:
+    image: redis:7.2-alpine
+    container_name: lab37-redis-1
+    ports:
+      - "6381:6379"
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab37-redis-2:
+    image: redis:7.2-alpine
+    container_name: lab37-redis-2
+    ports:
+      - "6382:6379"
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab37-redis-3:
+    image: redis:7.2-alpine
+    container_name: lab37-redis-3
+    ports:
+      - "6383:6379"
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Observability Infrastructure
+  # ===========================================
+
+  lab37-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab37-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab37-jaeger:
+        condition: service_healthy
+    networks:
+      - lab37-network
+
+  lab37-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab37-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab37-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab37-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab37-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab37-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab37-prometheus:
+        condition: service_healthy
+      lab37-jaeger:
+        condition: service_healthy
+    networks:
+      - lab37-network
+
+  # ===========================================
+  # Lock Service API
+  # ===========================================
+
+  lab37-lock-service:
+    build:
+      context: ./services/lock-service
+    container_name: lab37-lock-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab37-otel-collector:4317
+      - OTEL_SERVICE_NAME=lock-service
+      - REDIS_NODES=lab37-redis-1:6379,lab37-redis-2:6379,lab37-redis-3:6379
+      - LOCK_TTL_MS=10000
+      - LOCK_RETRY_DELAY_MS=200
+      - LOCK_RETRY_COUNT=3
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab37-redis-1:
+        condition: service_healthy
+      lab37-redis-2:
+        condition: service_healthy
+      lab37-redis-3:
+        condition: service_healthy
+      lab37-otel-collector:
+        condition: service_started
+    networks:
+      - lab37-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Worker Services (compete for locks)
+  # ===========================================
+
+  lab37-worker-1:
+    build:
+      context: ./services/worker
+    container_name: lab37-worker-1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab37-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker-1
+      - WORKER_ID=worker-1
+      - LOCK_SERVICE_URL=http://lab37-lock-service:8000
+      - WORK_DURATION_MS=2000
+      - WORK_INTERVAL_MS=1000
+    depends_on:
+      lab37-lock-service:
+        condition: service_healthy
+      lab37-otel-collector:
+        condition: service_started
+    networks:
+      - lab37-network
+
+  lab37-worker-2:
+    build:
+      context: ./services/worker
+    container_name: lab37-worker-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab37-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker-2
+      - WORKER_ID=worker-2
+      - LOCK_SERVICE_URL=http://lab37-lock-service:8000
+      - WORK_DURATION_MS=2000
+      - WORK_INTERVAL_MS=1000
+    depends_on:
+      lab37-lock-service:
+        condition: service_healthy
+      lab37-otel-collector:
+        condition: service_started
+    networks:
+      - lab37-network
+
+  lab37-worker-3:
+    build:
+      context: ./services/worker
+    container_name: lab37-worker-3
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab37-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker-3
+      - WORKER_ID=worker-3
+      - LOCK_SERVICE_URL=http://lab37-lock-service:8000
+      - WORK_DURATION_MS=2000
+      - WORK_INTERVAL_MS=1000
+    depends_on:
+      lab37-lock-service:
+        condition: service_healthy
+      lab37-otel-collector:
+        condition: service_started
+    networks:
+      - lab37-network
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab37-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab37-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab37-network
+    profiles:
+      - loadtest
+
+networks:
+  lab37-network:
+    driver: bridge

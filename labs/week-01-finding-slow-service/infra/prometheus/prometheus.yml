@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['gateway:8000']
+    metrics_path: /metrics
+
+  - job_name: 'service-a'
+    static_configs:
+      - targets: ['service-a:8001']
+    metrics_path: /metrics
+
+  - job_name: 'service-b'
+    static_configs:
+      - targets: ['service-b:8002']
+    metrics_path: /metrics
+
+  - job_name: 'service-c'
+    static_configs:
+      - targets: ['service-c:8003']
+    metrics_path: /metrics
+
+  - job_name: 'service-d'
+    static_configs:
+      - targets: ['service-d:8004']
+    metrics_path: /metrics

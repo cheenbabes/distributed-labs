@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['lab41-otel-collector:8889']
+
+  - job_name: 'coordinator'
+    static_configs:
+      - targets: ['lab41-coordinator:8000']
+    metrics_path: /metrics
+
+  - job_name: 'participant-a'
+    static_configs:
+      - targets: ['lab41-participant-a:8001']
+    metrics_path: /metrics
+
+  - job_name: 'participant-b'
+    static_configs:
+      - targets: ['lab41-participant-b:8002']
+    metrics_path: /metrics
+
+  - job_name: 'participant-c'
+    static_configs:
+      - targets: ['lab41-participant-c:8003']
+    metrics_path: /metrics
+
+  - job_name: 'client'
+    static_configs:
+      - targets: ['lab41-client:8080']
+    metrics_path: /metrics

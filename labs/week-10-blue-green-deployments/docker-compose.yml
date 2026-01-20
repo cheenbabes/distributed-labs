@@ -1,0 +1,169 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab10-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab10-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab10-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab10-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab10-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab10-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab10-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab10-network
+
+  # ===========================================
+  # Blue-Green Application Services
+  # ===========================================
+
+  app-blue:
+    build:
+      context: ./services/app-blue
+    container_name: lab10-app-blue
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=app
+      - APP_VERSION=v1
+      - APP_COLOR=blue
+      - PORT=8080
+      - LATENCY_MIN_MS=10
+      - LATENCY_MAX_MS=30
+    ports:
+      - "8081:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab10-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app-green:
+    build:
+      context: ./services/app-green
+    container_name: lab10-app-green
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=app
+      - APP_VERSION=v2
+      - APP_COLOR=green
+      - PORT=8080
+      - LATENCY_MIN_MS=10
+      - LATENCY_MAX_MS=30
+    ports:
+      - "8082:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab10-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Nginx Router (Load Balancer)
+  # ===========================================
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: lab10-nginx
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d:rw
+    ports:
+      - "8080:80"
+    depends_on:
+      app-blue:
+        condition: service_healthy
+      app-green:
+        condition: service_healthy
+    networks:
+      - lab10-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/nginx-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab10-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab10-network
+    profiles:
+      - loadtest
+
+networks:
+  lab10-network:
+    driver: bridge

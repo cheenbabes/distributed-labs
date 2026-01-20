@@ -1,0 +1,227 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab48-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab48-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab48-jaeger:
+        condition: service_healthy
+    networks:
+      - lab48-network
+
+  lab48-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab48-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab48-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab48-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab48-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab48-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab48-prometheus:
+        condition: service_healthy
+      lab48-jaeger:
+        condition: service_healthy
+    networks:
+      - lab48-network
+
+  # ===========================================
+  # Coordinator Service (Worker ID Assignment)
+  # ===========================================
+
+  lab48-coordinator:
+    build:
+      context: ./services/coordinator
+    container_name: lab48-coordinator
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab48-otel-collector:4317
+      - OTEL_SERVICE_NAME=coordinator
+      - MAX_WORKERS=1024
+    ports:
+      - "8100:8100"
+    depends_on:
+      - lab48-otel-collector
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # ID Generator Instances (Multiple Workers)
+  # ===========================================
+
+  lab48-id-generator-1:
+    build:
+      context: ./services/id-generator
+    container_name: lab48-id-generator-1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab48-otel-collector:4317
+      - OTEL_SERVICE_NAME=id-generator-1
+      - COORDINATOR_URL=http://lab48-coordinator:8100
+      - DATACENTER_ID=1
+      - PORT=8001
+      - INSTANCE_NAME=generator-1
+    ports:
+      - "8001:8001"
+    depends_on:
+      lab48-coordinator:
+        condition: service_healthy
+      lab48-otel-collector:
+        condition: service_started
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab48-id-generator-2:
+    build:
+      context: ./services/id-generator
+    container_name: lab48-id-generator-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab48-otel-collector:4317
+      - OTEL_SERVICE_NAME=id-generator-2
+      - COORDINATOR_URL=http://lab48-coordinator:8100
+      - DATACENTER_ID=1
+      - PORT=8002
+      - INSTANCE_NAME=generator-2
+    ports:
+      - "8002:8002"
+    depends_on:
+      lab48-coordinator:
+        condition: service_healthy
+      lab48-otel-collector:
+        condition: service_started
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab48-id-generator-3:
+    build:
+      context: ./services/id-generator
+    container_name: lab48-id-generator-3
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab48-otel-collector:4317
+      - OTEL_SERVICE_NAME=id-generator-3
+      - COORDINATOR_URL=http://lab48-coordinator:8100
+      - DATACENTER_ID=1
+      - PORT=8003
+      - INSTANCE_NAME=generator-3
+    ports:
+      - "8003:8003"
+    depends_on:
+      lab48-coordinator:
+        condition: service_healthy
+      lab48-otel-collector:
+        condition: service_started
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Client Service (ID Consumer)
+  # ===========================================
+
+  lab48-client:
+    build:
+      context: ./services/client
+    container_name: lab48-client
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab48-otel-collector:4317
+      - OTEL_SERVICE_NAME=client
+      - GENERATOR_URLS=http://lab48-id-generator-1:8001,http://lab48-id-generator-2:8002,http://lab48-id-generator-3:8003
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab48-id-generator-1:
+        condition: service_healthy
+      lab48-id-generator-2:
+        condition: service_healthy
+      lab48-id-generator-3:
+        condition: service_healthy
+    networks:
+      - lab48-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab48-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab48-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab48-network
+    profiles:
+      - loadtest
+
+networks:
+  lab48-network:
+    driver: bridge

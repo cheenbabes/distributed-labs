@@ -1,0 +1,200 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab19-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab19-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab19-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab19-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab19-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab19-network
+
+  # ===========================================
+  # Load Balancer (Nginx with config watcher)
+  # ===========================================
+
+  nginx:
+    build:
+      context: ./infra/nginx
+    container_name: lab19-nginx
+    volumes:
+      - nginx-config:/etc/nginx/conf.d
+    ports:
+      - "8000:80"
+    depends_on:
+      - app-v1
+      - app-v2
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  app-v1:
+    build:
+      context: ./services/app-v1
+    container_name: lab19-app-v1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab19-otel-collector:4317
+      - OTEL_SERVICE_NAME=app-v1
+      - SERVICE_VERSION=v1
+      - LATENCY_MIN_MS=20
+      - LATENCY_MAX_MS=50
+    ports:
+      - "8081:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app-v2:
+    build:
+      context: ./services/app-v2
+    container_name: lab19-app-v2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab19-otel-collector:4317
+      - OTEL_SERVICE_NAME=app-v2
+      - SERVICE_VERSION=v2
+      - LATENCY_MIN_MS=20
+      - LATENCY_MAX_MS=50
+      - ERROR_RATE=0.0
+      - EXTRA_LATENCY_MS=0
+    ports:
+      - "8082:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Canary Controller
+  # ===========================================
+
+  canary-controller:
+    build:
+      context: ./services/canary-controller
+    container_name: lab19-canary-controller
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab19-otel-collector:4317
+      - OTEL_SERVICE_NAME=canary-controller
+      - PROMETHEUS_URL=http://lab19-prometheus:9090
+      - NGINX_CONFIG_PATH=/etc/nginx/conf.d/upstream.conf
+      - ERROR_RATE_THRESHOLD=0.05
+      - CHECK_INTERVAL_SECONDS=10
+    volumes:
+      - nginx-config:/etc/nginx/conf.d
+    ports:
+      - "8090:8090"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      nginx:
+        condition: service_healthy
+    networks:
+      - lab19-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab19-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab19-network
+    profiles:
+      - loadtest
+
+networks:
+  lab19-network:
+    driver: bridge
+
+volumes:
+  nginx-config:

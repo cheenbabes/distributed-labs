@@ -1,0 +1,237 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab43-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab43-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab43-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab43-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab43-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - lab43-network
+
+  # ===========================================
+  # Storage Nodes
+  # ===========================================
+
+  storage-node-1:
+    build:
+      context: ./services/storage-node
+    container_name: lab43-storage-node-1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=storage-node
+      - NODE_ID=node-1
+      - PORT=8080
+    ports:
+      - "8081:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  storage-node-2:
+    build:
+      context: ./services/storage-node
+    container_name: lab43-storage-node-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=storage-node
+      - NODE_ID=node-2
+      - PORT=8080
+    ports:
+      - "8082:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  storage-node-3:
+    build:
+      context: ./services/storage-node
+    container_name: lab43-storage-node-3
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=storage-node
+      - NODE_ID=node-3
+      - PORT=8080
+    ports:
+      - "8083:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Optional 4th node for scaling exercises
+  storage-node-4:
+    build:
+      context: ./services/storage-node
+    container_name: lab43-storage-node-4
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=storage-node
+      - NODE_ID=node-4
+      - PORT=8080
+    ports:
+      - "8084:8080"
+    depends_on:
+      - otel-collector
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - scale
+
+  # ===========================================
+  # Ring Coordinator
+  # ===========================================
+
+  ring-coordinator:
+    build:
+      context: ./services/ring-coordinator
+    container_name: lab43-ring-coordinator
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=ring-coordinator
+      - VIRTUAL_NODES=150
+    ports:
+      - "8080:8080"
+    depends_on:
+      storage-node-1:
+        condition: service_healthy
+      storage-node-2:
+        condition: service_healthy
+      storage-node-3:
+        condition: service_healthy
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Client Service
+  # ===========================================
+
+  client:
+    build:
+      context: ./services/client
+    container_name: lab43-client
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=client
+      - COORDINATOR_URL=http://ring-coordinator:8080
+    ports:
+      - "8090:8090"
+    depends_on:
+      ring-coordinator:
+        condition: service_healthy
+    networks:
+      - lab43-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: lab43-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab43-network
+    profiles:
+      - loadtest
+
+networks:
+  lab43-network:
+    driver: bridge

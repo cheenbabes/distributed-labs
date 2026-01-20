@@ -1,0 +1,185 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab42-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab42-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab42-jaeger:
+        condition: service_healthy
+    networks:
+      - lab42-network
+
+  lab42-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab42-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab42-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab42-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab42-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab42-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab42-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab42-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab42-prometheus:
+        condition: service_healthy
+      lab42-jaeger:
+        condition: service_healthy
+    networks:
+      - lab42-network
+
+  # ===========================================
+  # Data Stores
+  # ===========================================
+
+  lab42-redis:
+    image: redis:7.2-alpine
+    container_name: lab42-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - lab42-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab42-postgres:
+    image: postgres:16-alpine
+    container_name: lab42-postgres
+    environment:
+      - POSTGRES_USER=labuser
+      - POSTGRES_PASSWORD=labpass
+      - POSTGRES_DB=labdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - lab42-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labuser -d labdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab42-api:
+    build:
+      context: ./services/api
+    container_name: lab42-api
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab42-otel-collector:4317
+      - OTEL_SERVICE_NAME=api
+      - REDIS_URL=redis://lab42-redis:6379
+      - DATABASE_URL=postgresql://labuser:labpass@lab42-postgres:5432/labdb
+      - WRITE_BEHIND_ENABLED=true
+      - WRITE_COALESCING_ENABLED=true
+      - COALESCING_WINDOW_MS=500
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab42-otel-collector:
+        condition: service_started
+      lab42-redis:
+        condition: service_healthy
+      lab42-postgres:
+        condition: service_healthy
+    networks:
+      - lab42-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab42-worker:
+    build:
+      context: ./services/worker
+    container_name: lab42-worker
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab42-otel-collector:4317
+      - OTEL_SERVICE_NAME=worker
+      - REDIS_URL=redis://lab42-redis:6379
+      - DATABASE_URL=postgresql://labuser:labpass@lab42-postgres:5432/labdb
+      - BATCH_SIZE=10
+      - FLUSH_INTERVAL_MS=1000
+      - MAX_RETRIES=3
+      - RETRY_DELAY_MS=500
+      - SIMULATE_DB_FAILURE=false
+    depends_on:
+      lab42-otel-collector:
+        condition: service_started
+      lab42-redis:
+        condition: service_healthy
+      lab42-postgres:
+        condition: service_healthy
+    networks:
+      - lab42-network
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab42-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab42-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab42-network
+    profiles:
+      - loadtest
+
+networks:
+  lab42-network:
+    driver: bridge

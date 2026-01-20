@@ -1,0 +1,273 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab46-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab46-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab46-jaeger:
+        condition: service_healthy
+    networks:
+      - lab46-network
+
+  lab46-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab46-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab46-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab46-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab46-prometheus:
+        condition: service_healthy
+      lab46-jaeger:
+        condition: service_healthy
+    networks:
+      - lab46-network
+
+  # ===========================================
+  # Storage Replicas (5 nodes)
+  # ===========================================
+
+  lab46-replica-1:
+    build:
+      context: ./services/replica
+    container_name: lab46-replica-1
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica-1
+      - REPLICA_ID=1
+      - REPLICA_PORT=9001
+      - LATENCY_MIN_MS=5
+      - LATENCY_MAX_MS=20
+      - FAILURE_MODE=none
+    ports:
+      - "9001:9001"
+    depends_on:
+      - lab46-otel-collector
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-replica-2:
+    build:
+      context: ./services/replica
+    container_name: lab46-replica-2
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica-2
+      - REPLICA_ID=2
+      - REPLICA_PORT=9002
+      - LATENCY_MIN_MS=10
+      - LATENCY_MAX_MS=30
+      - FAILURE_MODE=none
+    ports:
+      - "9002:9002"
+    depends_on:
+      - lab46-otel-collector
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-replica-3:
+    build:
+      context: ./services/replica
+    container_name: lab46-replica-3
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica-3
+      - REPLICA_ID=3
+      - REPLICA_PORT=9003
+      - LATENCY_MIN_MS=8
+      - LATENCY_MAX_MS=25
+      - FAILURE_MODE=none
+    ports:
+      - "9003:9003"
+    depends_on:
+      - lab46-otel-collector
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-replica-4:
+    build:
+      context: ./services/replica
+    container_name: lab46-replica-4
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica-4
+      - REPLICA_ID=4
+      - REPLICA_PORT=9004
+      - LATENCY_MIN_MS=15
+      - LATENCY_MAX_MS=40
+      - FAILURE_MODE=none
+    ports:
+      - "9004:9004"
+    depends_on:
+      - lab46-otel-collector
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9004/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab46-replica-5:
+    build:
+      context: ./services/replica
+    container_name: lab46-replica-5
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=replica-5
+      - REPLICA_ID=5
+      - REPLICA_PORT=9005
+      - LATENCY_MIN_MS=12
+      - LATENCY_MAX_MS=35
+      - FAILURE_MODE=none
+    ports:
+      - "9005:9005"
+    depends_on:
+      - lab46-otel-collector
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9005/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Coordinator Service (implements quorum logic)
+  # ===========================================
+
+  lab46-coordinator:
+    build:
+      context: ./services/coordinator
+    container_name: lab46-coordinator
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=coordinator
+      - COORDINATOR_PORT=8000
+      # Quorum configuration: N=5 replicas
+      - REPLICA_COUNT=5
+      - REPLICA_URLS=http://lab46-replica-1:9001,http://lab46-replica-2:9002,http://lab46-replica-3:9003,http://lab46-replica-4:9004,http://lab46-replica-5:9005
+      # Default quorum settings (R + W > N for consistency)
+      - READ_QUORUM=3
+      - WRITE_QUORUM=3
+      - QUORUM_MODE=strict
+      - TIMEOUT_MS=5000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab46-otel-collector
+      - lab46-replica-1
+      - lab46-replica-2
+      - lab46-replica-3
+      - lab46-replica-4
+      - lab46-replica-5
+    networks:
+      - lab46-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Client Service (for testing)
+  # ===========================================
+
+  lab46-client:
+    build:
+      context: ./services/client
+    container_name: lab46-client
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab46-otel-collector:4317
+      - OTEL_SERVICE_NAME=client
+      - COORDINATOR_URL=http://lab46-coordinator:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      lab46-coordinator:
+        condition: service_healthy
+    networks:
+      - lab46-network
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab46-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab46-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab46-network
+    profiles:
+      - loadtest
+
+networks:
+  lab46-network:
+    driver: bridge

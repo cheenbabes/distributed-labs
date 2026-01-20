@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package ratelimiter;
+
+// Rate Limiter Service
+service RateLimiterService {
+  // Check if a request should be allowed
+  rpc CheckRateLimit(RateLimitRequest) returns (RateLimitResponse);
+
+  // Get current rate limit configuration for a client
+  rpc GetConfig(GetConfigRequest) returns (RateLimitConfig);
+
+  // Update rate limit configuration for a client
+  rpc UpdateConfig(UpdateConfigRequest) returns (RateLimitConfig);
+
+  // Get usage statistics for a client
+  rpc GetUsage(GetUsageRequest) returns (UsageResponse);
+}
+
+// Request to check rate limit
+message RateLimitRequest {
+  string client_id = 1;      // Unique identifier for the client
+  string resource = 2;       // Resource being accessed (e.g., "/api/users")
+  int32 cost = 3;            // Cost of this request (default: 1)
+}
+
+// Response from rate limit check
+message RateLimitResponse {
+  bool allowed = 1;          // Whether the request is allowed
+  int64 limit = 2;           // The rate limit for this client/resource
+  int64 remaining = 3;       // Remaining requests in current window
+  int64 reset_at = 4;        // Unix timestamp when the limit resets
+  string algorithm = 5;      // Algorithm used (token_bucket, sliding_window)
+  int32 retry_after = 6;     // Seconds to wait before retrying (if denied)
+}
+
+// Request to get configuration
+message GetConfigRequest {
+  string client_id = 1;
+  string resource = 2;
+}
+
+// Rate limit configuration
+message RateLimitConfig {
+  string client_id = 1;
+  string resource = 2;
+  string algorithm = 3;          // "token_bucket" or "sliding_window"
+  int64 limit = 4;               // Requests per window (sliding) or bucket capacity (token)
+  int64 window_seconds = 5;      // Window size for sliding window
+  double refill_rate = 6;        // Tokens per second for token bucket
+  bool enabled = 7;
+}
+
+// Request to update configuration
+message UpdateConfigRequest {
+  RateLimitConfig config = 1;
+}
+
+// Request to get usage
+message GetUsageRequest {
+  string client_id = 1;
+  string resource = 2;
+  int64 from_timestamp = 3;      // Start of time range (optional)
+  int64 to_timestamp = 4;        // End of time range (optional)
+}
+
+// Usage statistics
+message UsageResponse {
+  string client_id = 1;
+  string resource = 2;
+  int64 total_requests = 3;
+  int64 allowed_requests = 4;
+  int64 denied_requests = 5;
+  int64 current_usage = 6;
+  int64 limit = 7;
+}

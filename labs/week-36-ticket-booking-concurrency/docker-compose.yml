@@ -1,0 +1,160 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab36-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab36-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab36-jaeger:
+        condition: service_healthy
+    networks:
+      - lab36-network
+
+  lab36-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab36-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab36-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab36-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab36-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab36-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab36-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab36-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab36-prometheus:
+        condition: service_healthy
+      lab36-jaeger:
+        condition: service_healthy
+    networks:
+      - lab36-network
+
+  # ===========================================
+  # Database Infrastructure
+  # ===========================================
+
+  lab36-postgres:
+    image: postgres:16-alpine
+    container_name: lab36-postgres
+    environment:
+      - POSTGRES_USER=booking
+      - POSTGRES_PASSWORD=booking123
+      - POSTGRES_DB=tickets
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./services/booking-service/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - lab36-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking -d tickets"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab36-redis:
+    image: redis:7-alpine
+    container_name: lab36-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - lab36-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Services
+  # ===========================================
+
+  lab36-booking-service:
+    build:
+      context: ./services/booking-service
+    container_name: lab36-booking-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab36-otel-collector:4317
+      - OTEL_SERVICE_NAME=booking-service
+      - DATABASE_URL=postgresql://booking:booking123@lab36-postgres:5432/tickets
+      - REDIS_URL=redis://lab36-redis:6379
+      # Locking strategy: none, pessimistic, optimistic, distributed
+      - LOCKING_STRATEGY=none
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab36-otel-collector:
+        condition: service_started
+      lab36-postgres:
+        condition: service_healthy
+      lab36-redis:
+        condition: service_healthy
+    networks:
+      - lab36-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab36-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab36-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab36-network
+    profiles:
+      - loadtest
+
+networks:
+  lab36-network:
+    driver: bridge

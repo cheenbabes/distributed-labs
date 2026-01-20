@@ -1,0 +1,207 @@
+services:
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  lab28-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    container_name: lab28-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      lab28-jaeger:
+        condition: service_healthy
+    networks:
+      - lab28-network
+
+  lab28-jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: lab28-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab28-prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: lab28-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab28-grafana:
+    image: grafana/grafana:10.3.1
+    container_name: lab28-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      lab28-prometheus:
+        condition: service_healthy
+      lab28-jaeger:
+        condition: service_healthy
+    networks:
+      - lab28-network
+
+  # ===========================================
+  # Chaos Controller (Central Chaos Management)
+  # ===========================================
+
+  lab28-chaos-controller:
+    build:
+      context: ./services/chaos-controller
+    container_name: lab28-chaos-controller
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab28-otel-collector:4317
+      - OTEL_SERVICE_NAME=chaos-controller
+      - TARGET_SERVICES=lab28-order-service:8001,lab28-inventory-service:8002,lab28-payment-service:8003
+    ports:
+      - "8080:8080"
+    depends_on:
+      - lab28-otel-collector
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Application Services (E-commerce microservices)
+  # ===========================================
+
+  lab28-gateway:
+    build:
+      context: ./services/gateway
+    container_name: lab28-gateway
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab28-otel-collector:4317
+      - OTEL_SERVICE_NAME=gateway
+      - ORDER_SERVICE_URL=http://lab28-order-service:8001
+      - CHAOS_CONTROLLER_URL=http://lab28-chaos-controller:8080
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lab28-otel-collector
+      - lab28-order-service
+      - lab28-chaos-controller
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab28-order-service:
+    build:
+      context: ./services/order-service
+    container_name: lab28-order-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab28-otel-collector:4317
+      - OTEL_SERVICE_NAME=order-service
+      - INVENTORY_SERVICE_URL=http://lab28-inventory-service:8002
+      - PAYMENT_SERVICE_URL=http://lab28-payment-service:8003
+      - CHAOS_CONTROLLER_URL=http://lab28-chaos-controller:8080
+    ports:
+      - "8001:8001"
+    depends_on:
+      - lab28-otel-collector
+      - lab28-inventory-service
+      - lab28-payment-service
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab28-inventory-service:
+    build:
+      context: ./services/inventory-service
+    container_name: lab28-inventory-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab28-otel-collector:4317
+      - OTEL_SERVICE_NAME=inventory-service
+      - CHAOS_CONTROLLER_URL=http://lab28-chaos-controller:8080
+    ports:
+      - "8002:8002"
+    depends_on:
+      - lab28-otel-collector
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lab28-payment-service:
+    build:
+      context: ./services/payment-service
+    container_name: lab28-payment-service
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lab28-otel-collector:4317
+      - OTEL_SERVICE_NAME=payment-service
+      - CHAOS_CONTROLLER_URL=http://lab28-chaos-controller:8080
+    ports:
+      - "8003:8003"
+    depends_on:
+      - lab28-otel-collector
+    networks:
+      - lab28-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================
+  # Load Testing
+  # ===========================================
+
+  lab28-k6:
+    image: grafana/k6:0.49.0
+    container_name: lab28-k6
+    volumes:
+      - ./loadtest:/scripts
+    networks:
+      - lab28-network
+    profiles:
+      - loadtest
+
+networks:
+  lab28-network:
+    driver: bridge
