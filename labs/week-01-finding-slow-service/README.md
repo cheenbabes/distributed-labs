@@ -11,7 +11,7 @@ Your distributed system is slow, but which service is the bottleneck? In this la
 
 ## Architecture
 
-```
+```ini
 ┌──────────┐    ┌───────────┐    ┌───────────┐    ┌───────────┐    ┌───────────┐
 │  Client  │───▶│  Gateway  │───▶│ Service A │───▶│ Service B │───▶│ Service C │
 └──────────┘    └───────────┘    └───────────┘    └───────────┘    └───────────┘
@@ -74,6 +74,7 @@ done
 **Expected:** Each request takes ~100-200ms total (sum of all service latencies).
 
 Now look at a trace in Jaeger:
+
 1. Open http://localhost:16686
 2. Select "gateway" from the Service dropdown
 3. Click "Find Traces"
@@ -85,22 +86,13 @@ Now look at a trace in Jaeger:
 
 ### Exercise 2: Inject Latency
 
-Now let's simulate a slow service. We'll add 500ms latency to Service D.
+Now let's simulate a slow service. We'll add 500ms latency to Service D using its admin API:
 
 ```bash
-# Inject latency into Service D
-docker compose exec service-d sh -c 'export INJECT_LATENCY=true && export INJECTED_LATENCY_MS=500'
-
-# Actually, we need to restart with new env vars
-docker compose stop service-d
-docker compose up -d service-d --env INJECT_LATENCY=true --env INJECTED_LATENCY_MS=500
-```
-
-Or use the simpler approach - update via API (if implemented):
-
-```bash
-# Enable slow mode via API
-curl -X POST http://localhost:8004/admin/latency -d '{"enabled": true, "ms": 500}'
+# Enable slow mode (500ms extra latency)
+curl -X POST http://localhost:8004/admin/latency \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true, "ms": 500}'
 ```
 
 Make requests again:
@@ -125,6 +117,7 @@ Without knowing which service we made slow, use Jaeger to find it.
 4. Identify which span takes the most time
 
 **What to look for:**
+
 - The span with the longest duration
 - The service name associated with that span
 - The gap between when the span started and ended
@@ -140,6 +133,7 @@ Use Jaeger's comparison features:
 3. Compare the two traces
 
 **Questions:**
+
 - How much did total latency increase?
 - What percentage of total time is now spent in Service D?
 - How does the latency compound through the chain?
@@ -156,6 +150,7 @@ docker compose run --rm k6 run /scripts/basic.js
 ```
 
 While the test runs:
+
 1. Watch Grafana dashboards (http://localhost:3001)
 2. Observe p50, p95, p99 latencies
 3. See how Service D's latency affects upstream services
@@ -165,11 +160,8 @@ While the test runs:
 ## Key Takeaways
 
 1. **Distributed tracing is essential** - Without it, you're guessing which service is slow
-
 2. **Latency compounds** - A 500ms delay in a leaf service becomes 500ms+ at the gateway
-
 3. **Look at the waterfall** - The visual representation immediately shows bottlenecks
-
 4. **Check percentiles, not averages** - p99 latency often tells a different story than p50
 
 ## Cleanup
@@ -181,15 +173,18 @@ docker compose down -v
 ## Troubleshooting
 
 ### Services not starting
+
 ```bash
 docker compose logs -f
 ```
 
 ### Traces not appearing in Jaeger
+
 - Wait 10-15 seconds after making requests
 - Check that otel-collector is running: `docker compose logs otel-collector`
 
 ### Port already in use
+
 Check for conflicts: `lsof -i :8000` (or whichever port)
 
 ## Next Lab

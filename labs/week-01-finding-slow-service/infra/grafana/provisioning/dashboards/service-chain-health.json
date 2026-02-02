@@ -61,7 +61,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum(rate(http_requests_total{endpoint=~\"/process|/api/process\"}[1m])) by (service)",
+          "expr": "sum(sum by (service) (http_requests_total{endpoint=~\"/process|/api/process\"}) / $__range_s) by (service)",
           "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
@@ -106,7 +106,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum(rate(http_requests_total{endpoint=~\"/process|/api/process\"}[1m])) by (service)",
+          "expr": "sum(sum by (service) (http_requests_total{endpoint=~\"/process|/api/process\"}) / $__range_s) by (service)",
           "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
@@ -231,7 +231,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-d\", endpoint=\"/process\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-d\", endpoint=\"/process\"}) by (le))",
           "legendFormat": "service-d",
           "range": true,
           "refId": "E"
@@ -239,7 +239,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-c\", endpoint=\"/process\"}[1m])) by (le)) - histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-d\", endpoint=\"/process\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-c\", endpoint=\"/process\"}) by (le)) - histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-d\", endpoint=\"/process\"}) by (le))",
           "legendFormat": "service-c",
           "range": true,
           "refId": "D"
@@ -247,7 +247,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-b\", endpoint=\"/process\"}[1m])) by (le)) - histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-c\", endpoint=\"/process\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-b\", endpoint=\"/process\"}) by (le)) - histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-c\", endpoint=\"/process\"}) by (le))",
           "legendFormat": "service-b",
           "range": true,
           "refId": "C"
@@ -255,7 +255,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-a\", endpoint=\"/process\"}[1m])) by (le)) - histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-b\", endpoint=\"/process\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-a\", endpoint=\"/process\"}) by (le)) - histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-b\", endpoint=\"/process\"}) by (le))",
           "legendFormat": "service-a",
           "range": true,
           "refId": "B"
@@ -263,7 +263,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"gateway\", endpoint=\"/api/process\"}[1m])) by (le)) - histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"service-a\", endpoint=\"/process\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"gateway\", endpoint=\"/api/process\"}) by (le)) - histogram_quantile(0.95, sum(http_request_duration_seconds_bucket{service=\"service-a\", endpoint=\"/process\"}) by (le))",
           "legendFormat": "gateway",
           "range": true,
           "refId": "A"
