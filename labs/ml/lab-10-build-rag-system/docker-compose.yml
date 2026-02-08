@@ -1,0 +1,120 @@
+services:
+  # ===========================================
+  # LLM Runtime
+  # ===========================================
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ml-lab-10-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - ml-lab-10-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ===========================================
+  # Vector Database
+  # ===========================================
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ml-lab-10-chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - ml-lab-10-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # RAG API Service
+  # ===========================================
+
+  rag-api:
+    build:
+      context: ./services/rag-api
+    container_name: ml-lab-10-rag-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - CHROMA_URL=http://chromadb:8000
+    depends_on:
+      ollama:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    networks:
+      - ml-lab-10-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # Document Ingestion
+  # ===========================================
+
+  ingestion:
+    build:
+      context: ./services/ingestion
+    container_name: ml-lab-10-ingestion
+    environment:
+      - RAG_API_URL=http://rag-api:8000
+    volumes:
+      - ./data/documents:/data/documents:ro
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    networks:
+      - ml-lab-10-network
+
+  # ===========================================
+  # Infrastructure — Monitoring
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: ml-lab-10-prometheus
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus']
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - ml-lab-10-network
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: ml-lab-10-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ml-lab-10-network
+
+volumes:
+  ollama-data:
+  chroma-data:
+
+networks:
+  ml-lab-10-network:
+    driver: bridge

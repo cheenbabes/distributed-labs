@@ -1,0 +1,99 @@
+services:
+  # ===========================================
+  # Model API — Prediction Service with Hot-Reload
+  # ===========================================
+
+  model-api:
+    build:
+      context: ./services/model-api
+    container_name: ml-lab-06-model-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-data:/app/model
+      - feedback-data:/app/data
+    networks:
+      - ml-lab-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # Retrainer — Periodic Retraining Job
+  # ===========================================
+
+  retrainer:
+    build:
+      context: ./services/retrainer
+    container_name: ml-lab-06-retrainer
+    volumes:
+      - model-data:/app/model
+      - feedback-data:/app/data
+    depends_on:
+      model-api:
+        condition: service_healthy
+    networks:
+      - ml-lab-network
+
+  # ===========================================
+  # Prometheus — Metrics Collection
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: ml-lab-06-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      model-api:
+        condition: service_healthy
+    networks:
+      - ml-lab-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # Grafana — Metrics Dashboards
+  # ===========================================
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: ml-lab-06-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - ml-lab-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# ===========================================
+# Shared Volumes
+# ===========================================
+
+volumes:
+  model-data:
+  feedback-data:
+
+networks:
+  ml-lab-network:
+    driver: bridge

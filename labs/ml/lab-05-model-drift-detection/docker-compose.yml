@@ -1,0 +1,76 @@
+services:
+  # ===========================================
+  # Model API — FastAPI with drift metrics
+  # ===========================================
+
+  model-api:
+    build:
+      context: ./services/model-api
+    container_name: ml-lab-05-model-api
+    ports:
+      - "8000:8000"
+    networks:
+      - ml-lab-05-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ===========================================
+  # Drift Simulator — Sends gradually drifting data
+  # ===========================================
+
+  drift-simulator:
+    build:
+      context: ./services/drift-simulator
+    container_name: ml-lab-05-drift-simulator
+    networks:
+      - ml-lab-05-network
+    depends_on:
+      model-api:
+        condition: service_healthy
+    profiles:
+      - simulator
+
+  # ===========================================
+  # Prometheus — Metrics Collection
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ml-lab-05-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - ml-lab-05-network
+    depends_on:
+      model-api:
+        condition: service_healthy
+
+  # ===========================================
+  # Grafana — Dashboards
+  # ===========================================
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: ml-lab-05-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - ml-lab-05-network
+    depends_on:
+      - prometheus
+
+networks:
+  ml-lab-05-network:
+    driver: bridge

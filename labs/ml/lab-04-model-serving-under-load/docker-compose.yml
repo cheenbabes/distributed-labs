@@ -1,0 +1,77 @@
+services:
+  # ===========================================
+  # Model API — FastAPI with batch support
+  # ===========================================
+
+  model-api:
+    build:
+      context: ./services/model-api
+    container_name: ml-lab-04-model-api
+    ports:
+      - "8000:8000"
+    networks:
+      - ml-lab-04-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ===========================================
+  # Prometheus — Metrics Collection
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ml-lab-04-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - ml-lab-04-network
+    depends_on:
+      model-api:
+        condition: service_healthy
+
+  # ===========================================
+  # Grafana — Dashboards
+  # ===========================================
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: ml-lab-04-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - ml-lab-04-network
+    depends_on:
+      - prometheus
+
+  # ===========================================
+  # k6 — Load Testing
+  # ===========================================
+
+  k6:
+    image: grafana/k6:0.49.0
+    container_name: ml-lab-04-k6
+    volumes:
+      - ./loadtest:/scripts:ro
+    networks:
+      - ml-lab-04-network
+    depends_on:
+      model-api:
+        condition: service_healthy
+    profiles:
+      - loadtest
+
+networks:
+  ml-lab-04-network:
+    driver: bridge

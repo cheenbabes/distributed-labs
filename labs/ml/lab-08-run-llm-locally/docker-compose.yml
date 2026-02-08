@@ -1,0 +1,79 @@
+services:
+  # ===========================================
+  # LLM Runtime
+  # ===========================================
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ml-lab-08-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - ml-lab-08-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ===========================================
+  # Benchmark & API Service
+  # ===========================================
+
+  llm-bench:
+    build:
+      context: ./services/llm-bench
+    container_name: ml-lab-08-bench
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - ml-lab-08-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # Infrastructure
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: ml-lab-08-prometheus
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus']
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - ml-lab-08-network
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: ml-lab-08-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ml-lab-08-network
+
+volumes:
+  ollama-data:
+
+networks:
+  ml-lab-08-network:
+    driver: bridge

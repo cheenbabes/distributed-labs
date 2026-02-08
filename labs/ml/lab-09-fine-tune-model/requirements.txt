@@ -1,0 +1,11 @@
+transformers==4.37.2
+torch==2.2.0+cpu
+datasets==2.16.1
+scikit-learn==1.4.0
+matplotlib==3.8.2
+numpy==1.26.3
+pandas==2.2.0
+jupyterlab==4.0.10
+accelerate==0.26.1
+tqdm==4.66.1
+seaborn==0.13.1

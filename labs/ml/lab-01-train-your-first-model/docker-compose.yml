@@ -1,0 +1,25 @@
+services:
+  # ===========================================
+  # Jupyter Lab — ML Workspace
+  # ===========================================
+
+  jupyter:
+    build:
+      context: .
+    container_name: ml-lab-01-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/lab/notebooks
+      - ./solutions:/lab/solutions
+    networks:
+      - ml-lab-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/api/status')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  ml-lab-network:
+    driver: bridge
